@@ -19,22 +19,6 @@ import argparse;
 from gnucash import GncNumeric, GncPrice;
 import gnucash;
 
-class AddCSVFile(argparse.Action):
-    def __call__(self, parser, namespace, values, optstr=None):
-#        print "DEBUG:AddCSVFile.__call__()";
-#        print "DEBUG:{0} {1} {2}".format(namespace, values, optstr);
-        
-        dest = getattr(namespace, self.dest);
-#        print "DEBUG:dest = {0}".format(dest);
-        if dest is None:
-            dest = {}; # empty dict
-        if namespace.ns not in dest.keys():
-            dest[namespace.ns] = []; # empty list
-        dest[namespace.ns].append(values);
- #       print "DEBUG:dest = {0}".format(dest);
-        setattr(namespace, self.dest, dest);
-        return
-
 def floatToGncNumeric(val = 0, denom = 1000000):
     # convert val (as float) to a rational form
     rval = Fraction.from_float(val).limit_denominator(denom);
@@ -69,47 +53,45 @@ def main(args):
 
     logging.debug("url = %s", url);
 
-    csvfiles = args.csvfile;
+    ns = getattr(args,'ns'); # namespace for symbol(s)
 
-    dta = {}; # empty dict
-    for ns in csvfiles: # loop over each namespace
-        quotes = {}; # empty dict
-        for fname in csvfiles[ns]:
-            logging.info("Reading quotes from %s...", fname);
-   
-            # read data from file
-            fid = open(fname,'rU')
+    quotes = {}; # empty dict
 
+    with getattr(args,'csvfile') as fid:
+#        import pdb; pdb.set_trace();
+        logging.info("Reading quotes from %s...", fid.name);
+
+        dialect = 'excel';
+
+        # note: cannot seek() on stdin, so don't attempt to
+        #       determine the dialect and just use the default
+        #       'excel' dialect
+        
+        if fid is not sys.stdin:
+            logging.info('Sniffing csv dialect...');
             dialect = csv.Sniffer().sniff(fid.read(2*1024));
 #            dialect.skipinitialspace = True;
 #            csv.register_dialect(ns,dialect)
 
             fid.seek(0); # reset file pointer?
-            reader = csv.DictReader(fid,dialect=dialect);
-
-            cnt = 0;
             
-            for row in reader:
-                logging.debug("%i:row = %s", cnt, row);
+        reader = csv.DictReader(fid,dialect=dialect);
+
+        cnt = 0;
+            
+        for row in reader:
+            logging.debug("%i:row = %s", cnt, row);
                 
-                symbol = row["Symbol"]; # symbol
-                date = datetime.strptime(row["Date"],"%Y-%m-%d"); # date
-                price = float(row["Close"]); # closing price
+            symbol = row["Symbol"]; # symbol
+            date = datetime.strptime(row["Date"],"%Y-%m-%d"); # date
+            price = float(row["Close"]); # closing price
 
-                if symbol not in quotes.keys():
-                    quotes[symbol] = []; # empty list
-                quotes[symbol].append((date,price)); # (date,price) tuple
-                cnt = cnt + 1;
+            if symbol not in quotes.keys():
+                quotes[symbol] = []; # empty list
+            quotes[symbol].append((date,price)); # (date,price) tuple
+            cnt = cnt + 1;
 
-            logging.info("Ok. Read %i quotes.", cnt);
-
-            fid.close();
-            
-        if ns not in dta.keys():
-            dta[ns] = quotes; # empty dict
-        dta[ns].update(quotes);
-        
-#    import pdb; pdb.set_trace();
+        logging.info("Ok. Read %i quotes.", cnt);
 
     # Initialize Gnucash session
     try:
@@ -122,50 +104,49 @@ def main(args):
     pdb = book.get_price_db();
     tbl = book.get_table(); # the commodity table
 
-    for ns in dta.keys():
-        logging.debug("{0} <- {1}".format(ns,dta[ns].keys()));
-        for symbol in dta[ns].keys():
-            stock = tbl.lookup(ns, symbol);
-            if stock is None:
-                logging.error("Failed to find %s in %s.", symbol, ns);
-                return(1);
-            else:
-                logging.debug('Found symbol %s in %s.', symbol, ns);
+    logging.debug("{0} <- {1}".format(ns,quotes.keys()));
+    for symbol in quotes.keys():
+        stock = tbl.lookup(ns, symbol);
+        if stock is None:
+            logging.error("Failed to find %s in %s.", symbol, ns);
+            return(1);
+        else:
+            logging.debug('Found symbol %s in %s.', symbol, ns);
                 
-            cur = tbl.lookup('CURRENCY', args.currency);
-            if cur is None:
-                logging.error("Failed to find currency %s.", args.currency);
-                return(1);
-            else:
-                logging.debug('Found currency %s.', args.currency);
+        cur = tbl.lookup('CURRENCY', args.currency);
+        if cur is None:
+            logging.error("Failed to find currency %s.", args.currency);
+            return(1);
+        else:
+            logging.debug('Found currency %s.', args.currency);
 
-            if args.purge:
-                # purge existing quotes
-                logging.info("Purging quotes for %s in %s...", symbol, ns);
-                # get existing quotes from the database
-                p = pdb.get_prices(stock,cur);
-                for i in range(0,len(p)):
-                    pdb.remove_price(p[i]);
+        if args.purge:
+            # purge existing quotes
+            logging.info("Purging quotes for %s in %s...", symbol, ns);
+            # get existing quotes from the database
+            p = pdb.get_prices(stock,cur);
+            for i in range(0,len(p)):
+                pdb.remove_price(p[i]);
 
-            # add new quotes
-            logging.info("Adding quotes for %s in %s...", symbol, ns);
+        # add new quotes
+        logging.info("Adding quotes for %s in %s...", symbol, ns);
 
-            quotes = dta[ns][symbol];
+        q = quotes[symbol];
 
-            cnt = 0;
-            for (date,price) in quotes:
-#                import pdb; pdb.set_trace();
-                p = GncPrice(book); # new GncPrice object
-                p.set_time(date);
-                p.set_commodity(stock);
-                p.set_currency(cur);
-                p.set_value(floatToGncNumeric(price));
-                p.set_typestr('last');
-                p.set_source('user:price-editor'); # almost true!
-                pdb.add_price(p);
-                cnt = cnt + 1;
+        cnt = 0;
+        for (date,price) in q:
+#            import pdb; pdb.set_trace();
+            p = GncPrice(book); # new GncPrice object
+            p.set_time(date);
+            p.set_commodity(stock);
+            p.set_currency(cur);
+            p.set_value(floatToGncNumeric(price));
+            p.set_typestr('last');
+            p.set_source('user:price-editor'); # almost true!
+            pdb.add_price(p);
+            cnt = cnt + 1;
                 
-            logging.info("Ok. Added %i quotes for %s.",cnt,symbol);
+        logging.info("Ok. Added %i quotes for %s.",cnt,symbol);
 
     # clean up
     if not args.dryrun:
@@ -222,11 +203,12 @@ if __name__ == "__main__":
                    help = "specify the currency");
 
     # required arguments
-    p.add_argument("-i","--import",
-                   action = AddCSVFile,
+    p.add_argument("-i","--input",
+                   action = 'store', type = argparse.FileType('r', 0),
+                   default = sys.stdin,
                    metavar = "FILE",
                    dest = "csvfile",
-                   help = "import quotes from FILE");
+                   help = "read quotes from FILE in csv format");
 
     p.add_argument("gcfile", action = "store", metavar = "gcfile",
                    help = argparse.SUPPRESS);
